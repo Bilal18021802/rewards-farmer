@@ -291,10 +291,19 @@ class RewardsTaskUtils:
 
 		self.tab_utils.close_all_other_tabs(exceptions=[main_tab])
 
+	def _explore_on_bing_cards(self):
+		# Asked once first, so an account without the section moves on at once
+		# instead of sitting out a wait. Only a section that is there and still
+		# rendering gets the wait.
+		try:
+			return self.elements.get_explore_on_bing_elements()
+		except element_selectors.ElementNotReady:
+			return self.wait_for_element(self.elements.get_explore_on_bing_elements)
+
 	def complete_explore_on_bing_tasks(self):
 		self.switch_to_earn_page()
 
-		explore_on_bing_links = self.elements.get_explore_on_bing_elements()
+		explore_on_bing_links = self._explore_on_bing_cards()
 
 		if not explore_on_bing_links:
 			# Raise rather than return, so complete_all_tasks reports this as
@@ -306,7 +315,17 @@ class RewardsTaskUtils:
 		total = len(explore_on_bing_links)
 		self.progress = f"searched 0 of {total} cards"
 
-		for number, card in enumerate(explore_on_bing_links, start=1):
+		for number in range(1, total + 1):
+			# Read again before every card. Coming back from the search tab
+			# re-renders the section, so a reference taken before the first
+			# search went stale: "searched 2 of 3 cards, then
+			# StaleElementReferenceException" (#102).
+			cards = self._explore_on_bing_cards()
+
+			if number > len(cards):
+				break
+
+			card = cards[number - 1]
 			desc = self.elements.extract_card_descriptions(card)
 			query = queries.search_query_for_task(desc)
 
@@ -328,7 +347,7 @@ class RewardsTaskUtils:
 
 		time.sleep(random.uniform(1, 2)) # allow card statuses to update
 
-		for card in explore_on_bing_links:
+		for card in self._explore_on_bing_cards():
 			if not self.elements.card_is_complete(card):
 				logger.warning(
 					"Explore on Bing Card [desc=%r] is not complete after searching. Please check manually.",
@@ -346,7 +365,26 @@ class RewardsTaskUtils:
 		self.wait_for_then_click(self.elements.get_open_visual_search_sidebar)
 		self.progress = "opened the sidebar"
 
-		self.wait_for_then_click(self.elements.get_search_now_link_from_visual_search_sidebar)
+		# Once today's visual search is done the panel has no link left to
+		# wait for. Without this every later run that day waited it out and
+		# reported a task with nothing left to do as failed.
+		done = object()
+
+		def link_or_done():
+			try:
+				return self.elements.get_search_now_link_from_visual_search_sidebar()
+			except NoSuchElementException:
+				if self.elements.visual_search_done_today():
+					return done
+
+				raise
+
+		if self.wait_for_element(link_or_done) is done:
+			logger.info("Visual search is already done for today")
+
+			return
+
+		self.move_to_and_click(self.elements.get_search_now_link_from_visual_search_sidebar)
 
 		self.tab_utils.switch_to_other_tab()
 		self.progress = "opened the visual search page"
@@ -462,6 +500,85 @@ class RewardsTaskUtils:
 			logger.warning("Search quota not filled: %s/%s", points_earned, max_pts)
 		else:
 			logger.info("Search quota complete: %s/%s", points_earned, max_pts)
+
+	def complete_quests(self, max_steps: int = 8):
+		"""Work through the punch cards in the quests section.
+
+		Every activity is a plain Bing link, so there is nothing to interpret.
+		Cards unlock one step at a time, which is why each card's page is loaded
+		again after every activity instead of collecting its links up front.
+		"""
+		self.switch_to_earn_page()
+
+		quest_urls = []
+
+		for link in self.elements.get_quest_links():
+			href = link.get_dom_attribute("href") or ""
+
+			if href.startswith("/"):
+				href = "https://rewards.bing.com" + href
+
+			if href and href not in quest_urls:
+				quest_urls.append(href)
+
+		if not quest_urls:
+			raise NoSuchElementException("no quests in this UI variant")
+
+		logger.info("%s quest(s) found", len(quest_urls))
+
+		self.progress = f"worked through 0 of {len(quest_urls)} quests"
+
+		for number, url in enumerate(quest_urls, start=1):
+			self.complete_single_quest(url, max_steps)
+			self.progress = f"worked through {number} of {len(quest_urls)} quests"
+
+	def complete_single_quest(self, url: str, max_steps: int) -> int:
+		"""Click the unlocked activities of one punch card, returning how many."""
+		completed = 0
+		clicked = set()
+
+		for _ in range(max_steps):
+			self.driver.get(url)
+			self.tab_utils.ensure_focus()
+
+			try:
+				self.wait_for_element(self.elements.get_quest_activity_links)
+			except TimeoutException:
+				break
+
+			# Some cards keep an activity clickable after the click, for example
+			# one whose punches come from searching on separate days rather than
+			# from the link. Without this the loop clicked the same link once
+			# per round until max_steps ran out.
+			activities = [
+				activity for activity in self.elements.get_quest_activity_links()
+				if ((activity.text or "").strip(), activity.get_dom_attribute("href") or "") not in clicked
+			]
+
+			if not activities:
+				break
+
+			activity = activities[0]
+			label = (activity.text or "").strip()
+			clicked.add((label, activity.get_dom_attribute("href") or ""))
+
+			self.move_to_and_click(activity)
+			time.sleep(random.uniform(2, 4))
+			self.tab_utils.close_all_other_tabs()
+
+			completed += 1
+			logger.info("Quest activity done: %r", label[:40])
+
+			time.sleep(random.uniform(1, 2))
+
+		card = url.rsplit("/", 1)[-1]
+
+		if completed:
+			logger.info("%s activity/activities completed on %s", completed, card)
+		else:
+			logger.info("Nothing left to click on %s", card)
+
+		return completed
 
 	def read_search_points(self):
 		"""Open the points breakdown, read the Bing search row, close it again."""
@@ -598,6 +715,7 @@ class RewardsTaskUtils:
 			("Explore on Bing", self.complete_explore_on_bing_tasks),
 			("Visual search", self.complete_visual_search),
 			("Misc cards", self.complete_misc_cards),
+			("Quests", self.complete_quests),
 			("Required searches", self.complete_required_searches),
 			("Bonus points", self.claim_bonus_points),
 		)

@@ -53,6 +53,12 @@ You must also have a [webdriver for Microsoft Edge](https://learn.microsoft.com/
 
 At this point you can run the config script using `python src/init-config.py`, which will walk you through the available configuration options. However, it is still recommended that you continue reading the rest of this README before doing so to fully understand each option.
 
+Running `init-config.py` with the `--manage-accounts` flag (shown below) will allow you to add, remove, and sign in to accounts without reconfiguring the entire project.
+
+```sh
+py .\src\init-config.py --manage-accounts
+```
+
 ### Where search queries come from
 
 The bot needs short strings to type into Bing. Two backends produce them, set with `QUERY_SOURCE`:
@@ -99,6 +105,8 @@ The profile directory in `src/constants.py` is set to `Default`. If this signs y
 Run main.py (`python src/main.py`; paths are resolved from the repository, so it can be started from any directory), wait for the page to launch, and then CTRL-C to quit the application immediately. Sign in to the created profile with your Microsoft account on both Bing and `rewards.bing.com`.
 
 EU Users: you may have to accept a consent banner once on `rewards.bing.com` and on the Bing search page, `bing.com`. Once you consent, your choice will be saved for future runs using the same profile, so you will not need to interact with the banner during automated runs.
+
+The bot finds buttons by their English labels, so it starts Edge with `--accept-lang=en-US` and Rewards and Bing load in English whatever language Edge is set to. Edge saves this setting in the profile, so Bing and Rewards also show up in English when you open that profile yourself.
 
 Close all webdriver browser instances. Run `main.py` again; the automation should start working.
 

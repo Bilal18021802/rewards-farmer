@@ -177,6 +177,30 @@ class DuplicatedContainer(unittest.TestCase):
 		self.assertNotIsInstance(caught.exception, element_selectors.ElementNotReady)
 
 
+class ExploreOnBingSection(unittest.TestCase):
+	"""Absence and a section still rendering used to come back as the same []."""
+
+	def _driver(self, displayed, links):
+		section = FakeElement(
+			displayed=displayed,
+			children={(By.TAG_NAME, "a"): [FakeElement(text=f"card {i}") for i in range(links)]},
+		)
+
+		return FakeDriver(children={(By.ID, "exploreonbing"): [section]})
+
+	def test_a_market_without_the_section_gets_no_cards(self):
+		self.assertEqual(selectors_for(FakeDriver()).get_explore_on_bing_elements(), [])
+
+	def test_a_section_still_rendering_is_not_reported_as_missing(self):
+		with self.assertRaises(element_selectors.ElementNotReady):
+			selectors_for(self._driver(displayed=True, links=0)).get_explore_on_bing_elements()
+
+	def test_a_rendered_section_gives_its_cards(self):
+		cards = selectors_for(self._driver(displayed=True, links=3)).get_explore_on_bing_elements()
+
+		self.assertEqual(len(cards), 3)
+
+
 class DailySetOpener(unittest.TestCase):
 	"""The opener label has to be distinguished from the level up entry."""
 
@@ -255,6 +279,104 @@ class DailySetActivityUrls(unittest.TestCase):
 		)).get_daily_set_elements()
 
 		self.assertEqual(len(found), 2)
+
+
+class QuestPages(unittest.TestCase):
+	def _link(self, text, href, disabled=None):
+		attributes = {"href": href}
+
+		if disabled is not None:
+			attributes["aria-disabled"] = disabled
+
+		return FakeElement(text=text, attributes=attributes)
+
+	def test_the_quests_section_gives_its_punch_card_links(self):
+		section = FakeElement(children={(By.TAG_NAME, "a"): [
+			self._link("Weekly card", "/earn/quest/ENWW_weekly_punchcard"),
+			self._link("See all", "/earn"),
+		]})
+		selectors = selectors_for(FakeDriver(children={(By.ID, "quests"): [section]}))
+
+		self.assertEqual([l.text for l in selectors.get_quest_links()], ["Weekly card"])
+
+	def test_no_quests_section_gives_no_links(self):
+		self.assertEqual(selectors_for(FakeDriver()).get_quest_links(), [])
+
+	def test_only_unlocked_bing_activities_inside_main_count(self):
+		main = FakeElement(children={(By.TAG_NAME, "a"): [
+			self._link("Search for flights", "https://www.bing.com/search?q=flights"),
+			self._link("Try Bing home", "https://www.bing.com/?form=ML2X&OCID=ML2X"),
+			self._link("Unlocks tomorrow", "https://www.bing.com/search?q=next", disabled="true"),
+			self._link("Back to Rewards", "https://rewards.bing.com/earn"),
+			self._link("", "https://www.bing.com/search?q=icon"),
+		]})
+		footer = self._link("Open Bing", "https://www.bing.com/?rwgbopen=1")
+		driver = FakeDriver(children={(By.TAG_NAME, "main"): [main], (By.TAG_NAME, "a"): [footer]})
+
+		labels = [l.text for l in selectors_for(driver).get_quest_activity_links()]
+
+		self.assertEqual(labels, ["Search for flights", "Try Bing home"])
+
+
+class VisualSearchPanel(unittest.TestCase):
+	"""The three shapes the visual search panel comes in.
+
+	Running streak and done for today were read off a live panel on
+	2026-10-02. The never activated shape is the one reported in #80.
+	"""
+
+	DONE_CONTROL = '[role="link"]'
+
+	def _driver(self, links=(), controls=()):
+		panel = FakeElement(
+			attributes={"id": "react-aria-42"},
+			children={
+				(By.TAG_NAME, "a"): [FakeElement(text=text) for text in links],
+				(By.CSS_SELECTOR, self.DONE_CONTROL): list(controls),
+			},
+		)
+
+		return FakeDriver(children={(By.TAG_NAME, "section"): [panel]})
+
+	def _control(self, text, disabled):
+		attributes = {"role": "link"}
+
+		if disabled is not None:
+			attributes["aria-disabled"] = disabled
+
+		return FakeElement(text=text, attributes=attributes)
+
+	def test_a_running_streak_links_to_search_now(self):
+		selectors = selectors_for(self._driver(links=["Activity: 0/1", "Search now"]))
+
+		self.assertEqual(selectors.get_search_now_link_from_visual_search_sidebar().text, "Search now")
+		self.assertFalse(selectors.visual_search_done_today())
+
+	def test_an_account_that_never_started_the_streak_links_to_activate(self):
+		# One link only, so the positional fallback has nothing to take.
+		selectors = selectors_for(self._driver(links=["Activate streak"]))
+
+		self.assertEqual(selectors.get_search_now_link_from_visual_search_sidebar().text, "Activate streak")
+
+	def test_a_panel_done_for_today_has_nothing_to_click(self):
+		selectors = selectors_for(self._driver(controls=[self._control("Search now", "true")]))
+
+		with self.assertRaises(NoSuchElementException):
+			selectors.get_search_now_link_from_visual_search_sidebar()
+
+		self.assertTrue(selectors.visual_search_done_today())
+
+	def test_an_enabled_search_now_control_is_not_done(self):
+		for disabled in (None, "false"):
+			with self.subTest(aria_disabled=disabled):
+				selectors = selectors_for(self._driver(controls=[self._control("Search now", disabled)]))
+
+				self.assertFalse(selectors.visual_search_done_today())
+
+	def test_another_disabled_control_does_not_count_as_done(self):
+		selectors = selectors_for(self._driver(controls=[self._control("How it works", "true")]))
+
+		self.assertFalse(selectors.visual_search_done_today())
 
 
 class CookieConsentTests(unittest.TestCase):

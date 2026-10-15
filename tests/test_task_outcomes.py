@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from selenium.common.exceptions import (
 	NoSuchElementException,
+	StaleElementReferenceException,
 	TimeoutException,
 	WebDriverException,
 )
@@ -232,6 +233,7 @@ class TaskLoop(unittest.TestCase):
 		("Explore on Bing", "complete_explore_on_bing_tasks"),
 		("Visual search", "complete_visual_search"),
 		("Misc cards", "complete_misc_cards"),
+		("Quests", "complete_quests"),
 		("Required searches", "complete_required_searches"),
 		("Bonus points", "claim_bonus_points"),
 	)
@@ -343,6 +345,23 @@ def failing_on(call_number, exc, value=None):
 	return stand_in
 
 
+def wait_once(getter, timeout=10):
+	"""wait_for_element without the waiting: one look, then the same verdict."""
+	try:
+		found = getter()
+	except ElementNotReady as exc:
+		# There but still rendering, which the real wait lets out as the
+		# plain TimeoutException.
+		raise TimeoutException(str(exc)) from exc
+	except NoSuchElementException as exc:
+		raise ElementNeverAppeared(str(exc)) from exc
+
+	if not found:
+		raise TimeoutException("found something and rejected it")
+
+	return found
+
+
 class ProgressInsideTasks(unittest.TestCase):
 	"""The real task methods, stopped part way through.
 
@@ -408,6 +427,58 @@ class ProgressInsideTasks(unittest.TestCase):
 			output,
 		)
 
+	def _quests(self, pages, sticky=()):
+		"""The quests task over punch card pages: url -> labels still unlocked.
+
+		Clicking an activity uses it up, except the labels in sticky, which
+		stay clickable the way some cards keep their link after the click.
+		"""
+		class Link:
+			def __init__(self, text, href):
+				self.text, self.href = text, href
+
+			def get_dom_attribute(self, name):
+				return self.href if name == "href" else None
+
+		current = [None]
+		clicked = []
+
+		def click(activity):
+			clicked.append(activity.text)
+
+			if activity.text not in sticky:
+				pages[current[0]].remove(activity.text)
+
+		tasks = self._tasks(
+			get_quest_links=lambda: [Link("card", url) for url in ["/earn/quest/a", "/earn/quest/a", "/earn/quest/b"]],
+			get_quest_activity_links=lambda: [Link(text, f"https://www.bing.com/search?q={text}") for text in pages[current[0]]],
+		)
+		tasks.driver.get = lambda url: current.__setitem__(0, url)
+		tasks.wait_for_element = wait_once
+		tasks.move_to_and_click = click
+
+		return tasks, clicked
+
+	def test_quests_click_each_unlocked_activity_once(self):
+		pages = {
+			"https://rewards.bing.com/earn/quest/a": ["a1", "always open", "a2"],
+			"https://rewards.bing.com/earn/quest/b": ["b1"],
+		}
+		tasks, clicked = self._quests(pages, sticky={"always open"})
+
+		output = self._report(tasks, "complete_quests")
+
+		self.assertEqual(clicked, ["a1", "always open", "a2", "b1"])
+		self.assertIn("2 quest(s) found", output)
+		self.assertIn("[OK] Quests", output)
+
+	def test_no_quests_section_is_skipped(self):
+		tasks = self._tasks(get_quest_links=lambda: [])
+
+		output = self._report(tasks, "complete_quests")
+
+		self.assertIn("[SKIP] Quests: not available in this UI variant", output)
+
 	def test_explore_on_bing_without_a_section_is_still_skipped(self):
 		tasks = self._tasks(get_explore_on_bing_elements=lambda: [])
 
@@ -415,25 +486,158 @@ class ProgressInsideTasks(unittest.TestCase):
 
 		self.assertIn("[SKIP] Explore on Bing: not available in this UI variant", output)
 
-	def test_visual_search_that_opened_its_sidebar_is_not_called_unavailable(self):
-		# The sidebar is there, the link inside it is not.
-		sidebar, search_now = object(), object()
+	def test_explore_on_bing_without_a_section_is_not_kept_waiting(self):
+		# Most accounts do not have the section. Asking once is enough there,
+		# a wait would only add its length to every run.
+		tasks = self._tasks(get_explore_on_bing_elements=lambda: [])
+		waited = []
+		tasks.wait_for_element = lambda getter, timeout=10: waited.append(getter)
+
+		self._report(tasks, "complete_explore_on_bing_tasks")
+
+		self.assertEqual(waited, [])
+
+	def _explore_rendering(self, ready_after):
+		"""Explore on Bing on a page whose section renders after ready_after looks."""
+		looks = []
+
+		def explore():
+			looks.append(1)
+
+			if len(looks) <= ready_after:
+				raise ElementNotReady("'exploreonbing' is present but no visible copy has content yet")
+
+			return ["card 1"]
+
 		tasks = self._tasks(
-			get_open_visual_search_sidebar=sidebar,
-			get_search_now_link_from_visual_search_sidebar=search_now,
+			get_explore_on_bing_elements=explore,
+			extract_card_descriptions=lambda card: card,
+			get_bing_search_bar=lambda: "search bar",
+			card_is_complete=lambda card: True,
+		)
+		tasks.wait_for_element = wait_once
+
+		return tasks
+
+	def test_explore_on_bing_waits_for_a_section_that_is_still_rendering(self):
+		tasks = self._explore_rendering(ready_after=1)
+
+		with mock.patch.object(rewards_tasks.queries, "search_query_for_task", lambda desc: "query"):
+			output = self._report(tasks, "complete_explore_on_bing_tasks")
+
+		self.assertIn("[OK] Explore on Bing", output)
+
+	def test_explore_on_bing_that_never_finishes_rendering_is_a_failure(self):
+		tasks = self._explore_rendering(ready_after=99)
+
+		output = self._report(tasks, "complete_explore_on_bing_tasks")
+
+		self.assertIn(
+			"[FAIL] Explore on Bing: on the page but not ready in time (TimeoutException)",
+			output,
 		)
 
-		def wait_for_then_click(getter, timeout=10):
-			if getter is search_now:
-				raise ElementNeverAppeared("nothing matched")
+	def test_explore_on_bing_survives_the_section_rendering_again(self):
+		# #102: coming back from each search tab re-renders the section, so a
+		# card read before the first search is stale by the second click.
+		render = [0]
+		clicked = []
 
-		tasks.wait_for_then_click = wait_for_then_click
+		def cards():
+			return [(f"card {i}", render[0]) for i in range(1, 4)]
+
+		def click(card):
+			if card[1] != render[0]:
+				raise StaleElementReferenceException("stale element not found in the current frame")
+
+			clicked.append(card[0])
+
+		def back_on_the_earn_page(exceptions=None):
+			render[0] += 1
+
+		tasks = self._tasks(
+			get_explore_on_bing_elements=cards,
+			extract_card_descriptions=lambda card: card[0],
+			get_bing_search_bar=lambda: "search bar",
+			card_is_complete=lambda card: True,
+		)
+		tasks.move_to_and_click = click
+		tasks.tab_utils.close_all_other_tabs = back_on_the_earn_page
+		tasks.wait_for_element = wait_once
+
+		with mock.patch.object(rewards_tasks.queries, "search_query_for_task", lambda desc: "query"):
+			output = self._report(tasks, "complete_explore_on_bing_tasks")
+
+		self.assertEqual(clicked, ["card 1", "card 2", "card 3"])
+		self.assertIn("[OK] Explore on Bing", output)
+
+	def _visual_search(self, link=None, done_today=False):
+		"""The visual search task with its sidebar open.
+
+		link is what the panel offers to click, None for no link at all.
+		Returns the task and what it clicked.
+		"""
+		def search_now():
+			if link is None:
+				raise NoSuchElementException("visual search sidebar has no usable link")
+
+			return link
+
+		def no_camera_button():
+			raise NoSuchElementException("no camera button")
+
+		tasks = self._tasks(
+			get_open_visual_search_sidebar=lambda: "opener",
+			get_search_now_link_from_visual_search_sidebar=search_now,
+			visual_search_done_today=lambda: done_today,
+			get_visual_search_button=no_camera_button,
+		)
+
+		clicked = []
+		tasks.move_to_and_click = lambda target: clicked.append(target() if callable(target) else target)
+		tasks.wait_for_then_click = lambda getter, timeout=10: tasks.move_to_and_click(
+			tasks.wait_for_element(getter, timeout)
+		)
+		tasks.wait_for_element = wait_once
+
+		return tasks, clicked
+
+	def test_visual_search_that_opened_its_sidebar_is_not_called_unavailable(self):
+		# The sidebar is there, the link inside it is not, and the panel does
+		# not say the search is done either.
+		tasks, clicked = self._visual_search(link=None, done_today=False)
 
 		with mock.patch.object(rewards_tasks, "VISUAL_SEARCH_IMAGE_PATH", __file__):
 			output = self._report(tasks, "complete_visual_search")
 
 		self.assertIn(
 			"[FAIL] Visual search: opened the sidebar, then the next element never appeared",
+			output,
+		)
+
+	def test_visual_search_done_for_today_is_not_a_failure(self):
+		# What a second run on the same day sees: no link, and search now
+		# rendered disabled.
+		tasks, clicked = self._visual_search(link=None, done_today=True)
+
+		with mock.patch.object(rewards_tasks, "VISUAL_SEARCH_IMAGE_PATH", __file__):
+			output = self._report(tasks, "complete_visual_search")
+
+		self.assertIn("[OK] Visual search", output)
+		self.assertIn("Visual search is already done for today", output)
+		self.assertEqual(clicked, ["opener"])
+
+	def test_visual_search_with_a_link_still_goes_to_bing(self):
+		# A running streak is not mistaken for a finished one. The task clicks
+		# the link and only stops at the camera button stood in here.
+		tasks, clicked = self._visual_search(link="search now", done_today=False)
+
+		with mock.patch.object(rewards_tasks, "VISUAL_SEARCH_IMAGE_PATH", __file__):
+			output = self._report(tasks, "complete_visual_search")
+
+		self.assertEqual(clicked, ["opener", "search now"])
+		self.assertIn(
+			"[FAIL] Visual search: opened the visual search page, then the next element never appeared",
 			output,
 		)
 

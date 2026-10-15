@@ -1,14 +1,19 @@
+import logging
 import time
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.common.exceptions import JavascriptException
+from selenium.common.exceptions import JavascriptException, TimeoutException
 from selenium import webdriver
 from functools import partial
 import math
 import random
 import numpy as np
 from typing import Callable
+
+import log_utils
+
+logger = logging.getLogger(__name__)
 
 Point = tuple[int, int]
 
@@ -183,6 +188,12 @@ def get_final_path_from_real_time(
 	return final_path_function
 
 def get_movement_time_from_fitts_law(distance: float, target_width: float) -> float:
+	# A second click on the same control can pick the point the first move
+	# ended on. The pointer is already there and log2(0) raises, so there is
+	# no move to time. move_mouse lands a zero-length move on the target.
+	if distance <= 0:
+		return 0.0
+
 	index_of_difficulty = math.log2((2.0 * distance) / target_width)
 	movement_time = FITTS_LAW_A + FITTS_LAW_B * index_of_difficulty
 
@@ -270,7 +281,18 @@ class MouseUtils:
 		cursor.style.top = y + 'px';
 	};
 	"""
-		self.driver.execute_script(cursor_script)
+		# The red dot is there for a person watching, nothing reads it. On a
+		# page too busy to run this within the script timeout, letting the
+		# error out ended the whole run in RewardsTaskUtils.__init__ before
+		# any task. Without the dot the moves still work, and the first move
+		# that finds it missing adds it again.
+		try:
+			self.driver.execute_script(cursor_script)
+		except TimeoutException as exc:
+			logger.warning(
+				"cursor overlay not added, the page did not run the script in time: %s",
+				log_utils.exception_summary(exc),
+			)
 
 	def get_current_mouse_position(self) -> Point:
 		pos: dict[str, int] = self.driver.execute_script("return { x: window.cursorX, y: window.cursorY };")
