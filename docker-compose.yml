@@ -19,7 +19,13 @@ services:
       - path: .env
         required: false
     environment:
-      # specify these environment variables separately for defaults
+      # specify these environment variables separ
+      # To use a model instead, set QUERY_SOURCE=llm and give OLLAMA_HOST an
+      # address the container can reach: localhost inside a container is the
+      # container, so ollama running on the host is host.docker.internal, and
+      # 0.0.0.0 is a bind address that cannot be dialled at all.
+      #
+      #   QUERY_SOURCE=llm OLLAMA_HOST=host.docker.internal:11434 docker compose run --rm rewards-farmerately for defaults
       QUERY_SOURCE: ${QUERY_SOURCE:-trends}
       REWARDS_HEADLESS: "1"
     volumes:
