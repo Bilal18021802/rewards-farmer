@@ -440,8 +440,8 @@ class RewardsTaskUtils:
 	def complete_quests(self, max_steps: int = 8):
 		"""Work through the punch cards in the quests section.
 
-		Every activity is a plain Bing link, so there is nothing to interpret.
-		Cards unlock one step at a time, which is why each card's page is loaded
+		Cards can start with activation before their Bing activities unlock.
+		They unlock one step at a time, which is why each card's page is loaded
 		again after every activity instead of collecting its links up front.
 		"""
 		self.switch_to_earn_page()
@@ -472,6 +472,11 @@ class RewardsTaskUtils:
 		"""Click the unlocked activities of one punch card, returning how many."""
 		completed = 0
 		clicked = set()
+		def activity_key(activity):
+			href = activity.get_dom_attribute("href") or ""
+			# Only the admitted activation control can be on the Rewards host.
+			# New tracking parameters must not make that same start step new.
+			return ("quest start",) if "rewards.bing.com" in href else ((activity.text or "").strip(), href)
 
 		for _ in range(max_steps):
 			self.driver.get(url)
@@ -488,7 +493,7 @@ class RewardsTaskUtils:
 			# per round until max_steps ran out.
 			activities = [
 				activity for activity in self.elements.get_quest_activity_links()
-				if ((activity.text or "").strip(), activity.get_dom_attribute("href") or "") not in clicked
+				if activity_key(activity) not in clicked
 			]
 
 			if not activities:
@@ -496,7 +501,7 @@ class RewardsTaskUtils:
 
 			activity = activities[0]
 			label = (activity.text or "").strip()
-			clicked.add((label, activity.get_dom_attribute("href") or ""))
+			clicked.add(activity_key(activity))
 
 			self.move_to_and_click(activity)
 			time.sleep(random.uniform(2, 4))
