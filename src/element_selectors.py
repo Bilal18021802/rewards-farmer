@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlsplit
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
@@ -297,11 +298,35 @@ class ElementSelectionUtils:
 
 		return links
 
+	def _is_quest_start_link(self, link):
+		"""The observed card activation control, not a general dashboard link."""
+		try:
+			page = urlsplit(getattr(self.driver, "current_url", ""))
+			target = urlsplit(link.get_dom_attribute("href") or "")
+			label = " ".join((link.text or "").split()).casefold()
+			aria = " ".join((link.get_dom_attribute("aria-label") or "").split()).casefold()
+			return (
+				page.scheme == "https" and page.netloc == "rewards.bing.com"
+				and re.fullmatch(r"/earn/quest/[^/]+/?", page.path) is not None
+				and target.scheme == "https" and target.netloc == "rewards.bing.com" and target.path == "/dashboard"
+				and label == "activate quest" and aria.startswith("activate quest, ") and bool(aria[len("activate quest, "):].strip())
+				and link.get_dom_attribute("data-rac") is not None
+				and link.get_dom_attribute("data-react-aria-pressable") == "true"
+				and link.get_dom_attribute("target") == "_blank"
+				and {"noopener", "noreferrer"}.issubset((link.get_dom_attribute("rel") or "").lower().split())
+				and (link.get_dom_attribute("aria-disabled") or "").lower() != "true"
+				and link.get_dom_attribute("disabled") is None and link.get_dom_attribute("data-disabled") is None
+				and link.is_displayed()
+			)
+		except (ValueError, StaleElementReferenceException):
+			return False
+
 	def get_quest_activity_links(self):
 		"""Unlocked activity links on an open punch card page.
 
-		Not every activity points at `/search`, some link to the Bing home page
-		with tracking parameters, so this matches on the host. A card shows its
+		The observed Activate quest control links back to the Rewards dashboard;
+		only its specific activation signature may pass on that host. Search
+		activities keep their existing Bing-link filter. A card shows its
 		next activity before it unlocks and marks it `aria-disabled="true"`,
 		because it releases one punch per 24 hours, and that link must not be
 		clicked.
@@ -319,7 +344,9 @@ class ElementSelectionUtils:
 			try:
 				href = link.get_dom_attribute("href") or ""
 
-				if "bing.com" not in href or "rewards.bing.com" in href:
+				if "bing.com" not in href:
+					continue
+				if "rewards.bing.com" in href and not (containers and self._is_quest_start_link(link)):
 					continue
 
 				if not (link.text or "").strip():
