@@ -133,9 +133,12 @@ class QuestSteps(unittest.TestCase):
 		self.day.return_value = "2026-10-25"
 		quest_steps.record_click(CARD, HREF, "tomorrow")
 		self.assertEqual(json.loads(self.path.read_text())["accounts"], {"sample": [[CARD, HREF, "tomorrow"]]})
-		moment = datetime(2026, 10, 24, 23, tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=2)))
-		with mock.patch.object(quest_steps, "datetime", types.SimpleNamespace(now=lambda: moment)):
-			self.assertEqual(self.real_today(), "2026-10-25")
+		moment = datetime(2026, 10, 24, 23, tzinfo=timezone.utc)
+		for zone, expected in ((timezone.utc, "2026-10-24"), (timezone(timedelta(hours=2)), "2026-10-25")):
+			current = types.SimpleNamespace(astimezone=mock.Mock(return_value=moment.astimezone(zone)))
+			with self.subTest(zone=zone), mock.patch.object(quest_steps, "datetime", types.SimpleNamespace(now=lambda: current)):
+				self.assertEqual(self.real_today(), expected)
+			current.astimezone.assert_called_once_with()
 
 
 if __name__ == "__main__":
