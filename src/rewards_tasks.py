@@ -408,6 +408,7 @@ class RewardsTaskUtils:
 		logger.info("Search points before: %s/%s", points_earned, max_pts)
 
 		sent = 0
+		self._searches_sent = 0
 		self.progress = "sent 0 searches"
 
 		for round_number in range(1, max_rounds + 1):
@@ -417,11 +418,29 @@ class RewardsTaskUtils:
 			# Assume the lower known rate so a round never overshoots by much.
 			searches = max(1, (max_pts - points_earned) // 3)
 
-			batch = self.run_search_batch(searches, already_sent=sent)
-			sent += batch
-
 			previous = points_earned
-			points_earned, max_pts = self.read_search_points()
+			try:
+				batch = self.run_search_batch(searches, already_sent=sent)
+				points_earned, max_pts = self.read_search_points()
+			except (NoSuchElementException, TimeoutException) as exc:
+				if self._searches_sent == 0:
+					raise
+				batch = self._searches_sent - sent
+				# The last query can fill the quota before its clear button or the
+				# returning earn page is ready. Only a fresh reading can prove that.
+				logger.warning(
+					"Search result could not be verified after %s %s (%s), reloading once",
+					self._searches_sent, "search" if self._searches_sent == 1 else "searches", type(exc).__name__
+				)
+				try:
+					self.driver.get("https://rewards.bing.com/earn")
+					self.tab_utils.ensure_focus()
+					points_earned, max_pts = self.read_search_points()
+				except Exception:
+					raise exc
+				if points_earned < max_pts:
+					raise
+			sent += batch
 
 			logger.info(
 				"Round %s: %s searches -> %s/%s",
@@ -549,6 +568,7 @@ class RewardsTaskUtils:
 		The trends source can come back with fewer queries than asked for, so
 		the caller cannot assume count.
 		"""
+		self._searches_sent = already_sent
 		self.driver.get("https://www.bing.com/")
 		self.tab_utils.ensure_focus()
 
@@ -564,6 +584,7 @@ class RewardsTaskUtils:
 			self.keyboard.send_keys(f"{query} -noai{Keys.ENTER}")
 			sent_here = i + 1
 			sent = already_sent + sent_here
+			self._searches_sent = sent
 			self.progress = f"sent {sent} {'search' if sent == 1 else 'searches'}"
 
 			time.sleep(random.uniform(5.5, 7.5))
