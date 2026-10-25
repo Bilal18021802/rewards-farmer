@@ -2,6 +2,8 @@
 
 Automation for MS Rewards based on [https://youtu.be/4qdPcMNaioA](https://youtu.be/4qdPcMNaioA).
 
+A Windows desktop app built on this farmer, with setup, run history and a schedule, lives in [mardausdennis/rewards-farmer-app](https://github.com/mardausdennis/rewards-farmer-app).
+
 ## Table of Contents
 
 - [Core Setup & Running Instructions](#core-setup--running-instructions)
