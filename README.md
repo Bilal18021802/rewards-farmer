@@ -31,16 +31,27 @@ cd rewards-farmer
 
 ### Installing Dependencies
 
-Activate the virtual environment & install dependencies (you may have to use `python -m poetry` instead of `poetry`).
-You must have Python 3.12+ and Poetry installed.
+Activate the virtual environment and install dependencies. This project requires Python 3.12; newer Python releases are not supported yet.
 
-If `iex (poetry env activate)` fails with *"Cannot bind argument to parameter 'Command' because it is null"*, `poetry install` did not create an environment. Run `python --version` first: an older Python leaves poetry with nothing to activate, and the message explaining that goes to stderr rather than into `iex`.
+On Windows, install Python 3.12 with the Python Install Manager if it is not already available:
+
+```powershell
+py install 3.12
+```
+
+Use `py -3.12 -m poetry` for the remaining commands so Poetry always runs under Python 3.12. This avoids relying on whichever Python version the `python` command resolves to.
 
 Windows (PowerShell)
 
 ```sh
-poetry install
-iex (poetry env activate)
+py -3.12 -m poetry install
+iex (py -3.12 -m poetry env activate)
+```
+
+If PowerShell blocks activation scripts, allow locally created scripts for your user account and run the activation command again:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
 \*nix (Bash)
